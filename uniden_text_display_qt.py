@@ -24,7 +24,6 @@ import threading
 import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
-from pathlib import Path
 
 from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtUiTools import QUiLoader
@@ -42,8 +41,10 @@ MODEL_CHOICES = [
     "BCD996P2 / BCD325P2",
 ]
 
-# 36 x 18 scan icon selected/tuned in the Tkinter build. Kept as a bitmap so it does not
-# get redrawn with uneven canvas lines at small sizes.
+SCANNER_POLL_INTERVAL_MS = 250
+UI_REFRESH_INTERVAL_MS = 33
+
+# 36 x 18 scan icon bitmap kept exact to avoid uneven drawn lines at small sizes.
 SCAN_ICON_PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAACQAAAASCAYAAAAzI3woAAACDElEQVR4nNWVvaoTQRTHz9mPBK4b7odEbFQEb2ujpQj3Ae4j2PgYFj6AlYKvYGcros3a2lgoghZCECEQbrI7s7M7O7M787fIBmMhZIMJ+oOBgXPY82POmR2ifwzukwzgoCzLj4PB4Lq1FgACZiYATEQBMzMAlyRJUJbleZIkr/oKRT3zmYiO4yW/Bay1ZK39lcjc99v9hSaTiRuPx2+aprlirUUnGDJz6Zy7E8fxVecclj4830bor5Dn+V1r7UVVVRYApJSPiYgAhDsvDiDoVkxEVBTFbWOM0Fp7AFBKPVvl7VxmTSokIprP59fquv6+JvOCiChN06gb9L3IBEREWZYdaa0/dbcNVVW9BhB2a28y3LVroLV+571H27bQWr+fTqeXuni0t3alaRoREVVV9RIAjDEwxnyRUo5Xwmvy+5FSSj1fydR1PRNCnHYnE1dVdQPAWyHEg05qq3/RxhRF8QQAtNaNtfbHbDY7XY9rrW8CgLXWZ1l2tk2NXsPXNA2MMW0YhmHbtt+Y+QMzHwBwAIiZR977+8PhMPTeX7RtezYajT5vI7YRWutVq/AnlFKQUrbd/mvfGr167JybO+eYiLhpGmJmD4CZlwfdzcwoiqLAGOOY+VFfoV4sFotDAIcAjgAc53l+AuBESjkWQlyWUt5TSnnvPYQQD3cqswla61vee0gpnxIRrZ6X/5qfKw69dCsm1GcAAAAASUVORK5CYII="
 
 
@@ -91,7 +92,7 @@ def command_name(line: str) -> str:
 
 
 def pretty_xml_from_gsi(line: str) -> str:
-    xml_text = UnidenProtocol.extract_xml(line) if "UnidenProtocol" in globals() else ""
+    xml_text = UnidenProtocol.extract_xml(line)
     if not xml_text:
         return clean_field(line)
     try:
@@ -168,9 +169,15 @@ class ParsedDisplay:
     department: str = "---"
     channel: str = "---"
     unit: str = "---"
-    detail: str = ""
+    enc: str = ""
     sig: int = 0
     scanning: bool = False
+    system_held: bool = False
+    department_held: bool = False
+    channel_held: bool = False
+    system_index: int | None = None
+    department_index: int | None = None
+    channel_index: int | None = None
     rows: list[str] = field(default_factory=list)
 
 
@@ -258,6 +265,21 @@ class UnidenProtocol:
                     return str(v)
             return ""
 
+        def bool_attr(data: dict, *names: str) -> bool:
+            value = attr(data, *names).strip().lower()
+            return value in ("on", "hold", "held", "true", "1", "yes")
+
+        def int_attr(data: dict, *names: str) -> int | None:
+            for name in names:
+                value = attr(data, name)
+                if not value:
+                    continue
+                try:
+                    return int(value)
+                except Exception:
+                    pass
+            return None
+
         monitor = attrs("MonitorList")
         system = attrs("System")
         dept = attrs("Department")
@@ -266,6 +288,17 @@ class UnidenProtocol:
         unit = attrs("UnitID")
         prop = attrs("Property")
         active = tgid or conv
+
+        def int_attr(data: dict, *names: str) -> int | None:
+            for name in names:
+                value = attr(data, name)
+                if not value:
+                    continue
+                try:
+                    return int(value)
+                except Exception:
+                    pass
+            return None
 
         unit_name = attr(unit, "Name") or attr(unit, "U_Id", "UID", "UnitID")
         unit_value = strip_prefix(unit_name)
@@ -283,6 +316,14 @@ class UnidenProtocol:
 
         monitor_value = attr(monitor, "Name")
         system_value = attr(system, "Name")
+
+        system_index = int_attr(system, "Index", "Idx", "IndexNo")
+        department_index = int_attr(dept, "Index", "Idx", "IndexNo")
+        channel_index = int_attr(tgid, "Index", "Idx", "IndexNo") or int_attr(conv, "Index", "Idx", "IndexNo")
+
+        system_held = bool_attr(system, "Hold")
+        department_held = bool_attr(dept, "Hold")
+        channel_held = bool_attr(tgid, "Hold") or bool_attr(conv, "Hold")
 
         hold = (attr(active, "Hold") or "").strip().lower()
         if hold in ("on", "hold", "held", "true", "1", "yes"):
@@ -305,25 +346,30 @@ class UnidenProtocol:
             "unit": unit_value,
             "sig": sig,
             "scanning": scanning,
+            "system_held": system_held,
+            "department_held": department_held,
+            "channel_held": channel_held,
+            "system_index": system_index,
+            "department_index": department_index,
+            "channel_index": channel_index,
         }
 
     @staticmethod
-    def sts_right_detail(rows: list[str], unit_value: str) -> str:
-        uid = strip_prefix(unit_value)
-        if not valid_text(uid):
+    def sts_enc_info(sts_line: str) -> str:
+        # Read the STS CSV fields directly and return the fixed L12_MODE field.
+        try:
+            parts = UnidenProtocol.parse_csv_line(sts_line)
+        except Exception:
             return ""
-        # The detail row is the fixed-width STS screen row that repeats the UID and
-        # then contains the right-side detail, for example:
-        # UID:3299902     STD ADP 290
-        for row in rows:
-            r = clean_field(row)
-            if not r:
-                continue
-            m = re.match(rf"^\s*(?:UID|U-Id|U_Id)\s*:\s*{re.escape(uid)}\s+(.+?)\s*$", r, flags=re.I)
-            if m:
-                detail = clean_field(m.group(1))
-                if valid_text(detail):
-                    return detail
+        if not parts or parts[0] != "STS":
+            return ""
+
+        # L12_MODE is the mode field for row 12. In STS CSV, row N mode is at index 3 + (N-1)*2.
+        mode_index = 24
+        if mode_index < len(parts):
+            enc = clean_field(parts[mode_index] or "")
+            if valid_text(enc):
+                return enc
         return ""
 
     @staticmethod
@@ -339,7 +385,13 @@ class UnidenProtocol:
             parsed.unit = meta.get("unit", "---")
             parsed.sig = int(meta.get("sig", 0) or 0)
             parsed.scanning = bool(meta.get("scanning", False))
-            parsed.detail = UnidenProtocol.sts_right_detail(rows, parsed.unit)
+            parsed.system_held = bool(meta.get("system_held", False))
+            parsed.department_held = bool(meta.get("department_held", False))
+            parsed.channel_held = bool(meta.get("channel_held", False))
+            parsed.system_index = meta.get("system_index")
+            parsed.department_index = meta.get("department_index")
+            parsed.channel_index = meta.get("channel_index")
+            parsed.enc = UnidenProtocol.sts_enc_info(sts_line)
         return parsed
 
 
@@ -350,6 +402,8 @@ class ScannerWorkerBase(threading.Thread):
         self.interval = max(0.1, interval_ms / 1000.0)
         self.out_queue = out_queue
         self.stop_event = stop_event
+        self.send_lock = threading.Lock()
+        self.command_queue: queue.Queue[str] = queue.Queue()
 
     def open_connection(self):
         raise NotImplementedError
@@ -362,6 +416,24 @@ class ScannerWorkerBase(threading.Thread):
 
     def close_connection(self):
         pass
+
+    def queue_command(self, cmd: str) -> None:
+        self.command_queue.put(cmd)
+
+    def _process_queued_commands(self) -> None:
+        while not self.stop_event.is_set():
+            try:
+                cmd = self.command_queue.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                line = self.send_command(cmd)
+                self.out_queue.put(("status", f"Sent: {cmd}"))
+                self.out_queue.put(("raw", f"COMMAND: {cmd}"))
+                if line:
+                    self.out_queue.put(("raw", line))
+            except Exception as exc:
+                self.out_queue.put(("error", str(exc)))
 
     def run(self):
         connection_opened = False
@@ -385,6 +457,8 @@ class ScannerWorkerBase(threading.Thread):
                     pass
 
             while not self.stop_event.is_set():
+                self._process_queued_commands()
+                start_time = time.monotonic()
                 protocol = UnidenProtocol.protocol_for_model(self.mode)
                 try:
                     if protocol == "SDS":
@@ -420,7 +494,10 @@ class ScannerWorkerBase(threading.Thread):
                 except Exception as exc:
                     self.out_queue.put(("error", str(exc)))
                     break
-                time.sleep(self.interval)
+                elapsed = time.monotonic() - start_time
+                sleep_time = self.interval - elapsed
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
         finally:
             if connection_opened:
                 try:
@@ -447,23 +524,24 @@ class SerialWorker(ScannerWorkerBase):
         return f"{self.port} @ {self.baud}"
 
     def send_command(self, cmd: str) -> str:
-        self.ser.reset_input_buffer()
-        self.ser.write((cmd + "\r").encode("ascii"))
-        self.ser.flush()
-        if cmd == "GSI":
-            chunks = []
-            deadline = time.monotonic() + 1.5
-            while time.monotonic() < deadline:
-                raw = self.ser.read_until(b"\r", 8192)
-                if raw:
-                    chunks.append(decode_scanner_bytes(raw, clean=False))
-                    if b"</ScannerInfo>" in raw or "</ScannerInfo>" in chunks[-1]:
+        with self.send_lock:
+            self.ser.reset_input_buffer()
+            self.ser.write((cmd + "\r").encode("ascii"))
+            self.ser.flush()
+            if cmd == "GSI":
+                chunks = []
+                deadline = time.monotonic() + 1.5
+                while time.monotonic() < deadline:
+                    raw = self.ser.read_until(b"\r", 8192)
+                    if raw:
+                        chunks.append(decode_scanner_bytes(raw, clean=False))
+                        if b"</ScannerInfo>" in raw or "</ScannerInfo>" in chunks[-1]:
+                            break
+                    else:
                         break
-                else:
-                    break
-            return "".join(chunks)
-        raw = self.ser.read_until(b"\r", 4096)
-        return first_command_line(decode_scanner_bytes(raw), cmd)
+                return "".join(chunks)
+            raw = self.ser.read_until(b"\r", 4096)
+            return first_command_line(decode_scanner_bytes(raw), cmd)
 
     def close_connection(self):
         if self.ser and self.ser.is_open:
@@ -485,23 +563,24 @@ class UdpWorker(ScannerWorkerBase):
         return f"{self.host}:{self.port} UDP"
 
     def send_command(self, cmd: str) -> str:
-        self.sock.sendto((cmd + "\r").encode("ascii"), (self.host, self.port))
-        chunks = []
-        deadline = time.monotonic() + (1.5 if cmd == "GSI" else 1.0)
-        while time.monotonic() < deadline:
-            try:
-                data, _addr = self.sock.recvfrom(8192)
-            except socket.timeout:
-                break
-            if not data:
-                break
-            text = decode_scanner_bytes(data, clean=(cmd != "GSI"))
-            if text:
-                chunks.append(text)
-            if cmd != "GSI" or "</ScannerInfo>" in text:
-                break
-        joined = "\n".join(chunks)
-        return joined if cmd == "GSI" else first_command_line(joined, cmd)
+        with self.send_lock:
+            self.sock.sendto((cmd + "\r").encode("ascii"), (self.host, self.port))
+            chunks = []
+            deadline = time.monotonic() + (1.5 if cmd == "GSI" else 1.0)
+            while time.monotonic() < deadline:
+                try:
+                    data, _addr = self.sock.recvfrom(8192)
+                except socket.timeout:
+                    break
+                if not data:
+                    break
+                text = decode_scanner_bytes(data, clean=(cmd != "GSI"))
+                if text:
+                    chunks.append(text)
+                if cmd != "GSI" or "</ScannerInfo>" in text:
+                    break
+            joined = "\n".join(chunks)
+            return joined if cmd == "GSI" else first_command_line(joined, cmd)
 
     def close_connection(self):
         if self.sock:
@@ -509,12 +588,13 @@ class UdpWorker(ScannerWorkerBase):
 
 
 def px_font(family: str, px: int, bold: bool = False) -> QtGui.QFont:
-    """Create a font using exact pixel size for steadier small popout text."""
+    """Create a font using exact pixel size for steadier, sharper popout text."""
     font = QtGui.QFont(family)
     font.setPixelSize(int(px))
     font.setBold(bool(bold))
     try:
         font.setHintingPreference(QtGui.QFont.PreferFullHinting)
+        font.setStyleStrategy(QtGui.QFont.PreferNoAntialias | QtGui.QFont.PreferFullHinting)
     except Exception:
         pass
     return font
@@ -540,12 +620,28 @@ class SignalBars(QtWidgets.QWidget):
     def paintEvent(self, event):
         painter = QtGui.QPainter(self)
         painter.setRenderHint(QtGui.QPainter.Antialiasing, False)
-        bar_w, gap, base_y = 2, 3, 16
-        heights = [4, 7, 10, 13, 16]
-        x0 = 4
-        for i, h in enumerate(heights, start=1):
+        painter.setPen(QtCore.Qt.NoPen)
+        rect = self.rect().adjusted(2, 2, -2, -2)
+        if rect.width() <= 0 or rect.height() <= 0:
+            return
+
+        dpr = painter.device().devicePixelRatioF()
+        dev_rect = self.rect().adjusted(2, 2, -2, -2)
+        dev_left = round(dev_rect.left() * dpr)
+        dev_width = max(0, round(dev_rect.width() * dpr))
+
+        dev_bar_w = max(1, round(4.0 * dpr))
+        dev_gap = max(1, round(2.0 * dpr))
+        dev_heights = [max(1, round(h * dpr)) for h in (4.0, 7.0, 10.0, 13.0, 16.0)]
+        total_width = len(dev_heights) * dev_bar_w + (len(dev_heights) - 1) * dev_gap
+        dev_x = dev_left + max(0, (dev_width - total_width) // 2)
+
+        for i, dev_h in enumerate(dev_heights, start=1):
             color = self.active_color if i <= self.level else self.inactive_color
-            painter.fillRect(QtCore.QRect(x0 + (i - 1) * (bar_w + gap), base_y - h, bar_w + 1, h), color)
+            dev_y = round(dev_rect.bottom() * dpr - dev_h + dpr)
+            rectf = QtCore.QRectF(dev_x / dpr, dev_y / dpr, dev_bar_w / dpr, dev_h / dpr)
+            painter.fillRect(rectf, color)
+            dev_x += dev_bar_w + dev_gap
 
 
 class PopoutDisplay(QtWidgets.QWidget):
@@ -564,16 +660,17 @@ class PopoutDisplay(QtWidgets.QWidget):
         },
     }
 
-    def __init__(self, parent=None, theme: str = "night"):
-        super().__init__(parent, QtCore.Qt.FramelessWindowHint | QtCore.Qt.Window)
+    def __init__(self, parent=None, theme: str = "day"):
+        super().__init__(parent, QtCore.Qt.Window | QtCore.Qt.FramelessWindowHint)
+        self.setAttribute(QtCore.Qt.WA_StyledBackground, True)
         self.setObjectName("popoutDisplay")
         self.setWindowTitle("Uniden Display")
         self.setFixedSize(520, 185)
         self._drag_offset = None
-        self.theme = "night"
+        self.theme = "day"
 
         outer = QtWidgets.QVBoxLayout(self)
-        outer.setContentsMargins(10, 8, 10, 8)
+        outer.setContentsMargins(5, 5, 5, 5)
         outer.setSpacing(0)
 
         top_line = QtWidgets.QHBoxLayout()
@@ -585,7 +682,7 @@ class PopoutDisplay(QtWidgets.QWidget):
         top_line.addWidget(self.topLabel, 1)
 
         self.scanLabel = QtWidgets.QLabel()
-        self.scanLabel.setFixedSize(36, 18)
+        self.scanLabel.setFixedSize(30, 18)
         pm = QtGui.QPixmap()
         pm.loadFromData(QtCore.QByteArray.fromBase64(SCAN_ICON_PNG_B64.encode("ascii")), "PNG")
         self.scanPixmap = pm
@@ -595,27 +692,27 @@ class PopoutDisplay(QtWidgets.QWidget):
         self.sigBars = SignalBars()
         top_line.addWidget(self.sigBars, 0, QtCore.Qt.AlignVCenter)
         outer.addLayout(top_line)
-        outer.addSpacing(10)
+        outer.addSpacing(20)
 
         self.departmentLabel = QtWidgets.QLabel("---")
         self.departmentLabel.setAlignment(QtCore.Qt.AlignCenter)
-        self.departmentLabel.setFont(px_font("Roboto", 18))
+        self.departmentLabel.setFont(px_font("Roboto", 20, True))
         outer.addWidget(self.departmentLabel)
 
         self.channelLabel = QtWidgets.QLabel("---")
         self.channelLabel.setAlignment(QtCore.Qt.AlignCenter)
-        self.channelLabel.setFont(px_font("Roboto", 24))
+        self.channelLabel.setFont(px_font("Roboto", 26, True))
         outer.addWidget(self.channelLabel)
 
         self.unitLabel = QtWidgets.QLabel("---")
         self.unitLabel.setAlignment(QtCore.Qt.AlignCenter)
-        self.unitLabel.setFont(px_font("Roboto", 16))
+        self.unitLabel.setFont(px_font("Roboto", 18, True))
         outer.addWidget(self.unitLabel)
 
         outer.addSpacing(20)
         self.detailLabel = QtWidgets.QLabel("")
         self.detailLabel.setAlignment(QtCore.Qt.AlignCenter)
-        self.detailLabel.setFont(px_font("Roboto", 12))
+        self.detailLabel.setFont(px_font("Roboto", 14, True))
         outer.addWidget(self.detailLabel)
         outer.addStretch(1)
 
@@ -651,7 +748,7 @@ class PopoutDisplay(QtWidgets.QWidget):
         self.departmentLabel.setText(parsed.department or "---")
         self.channelLabel.setText(parsed.channel or "---")
         self.unitLabel.setText(parsed.unit or "---")
-        self.detailLabel.setText(parsed.detail if valid_text(parsed.detail) else "")
+        self.detailLabel.setText(parsed.enc if valid_text(parsed.enc) else "")
         self.sigBars.set_level(parsed.sig)
         self.scanLabel.setVisible(parsed.scanning)
 
@@ -689,14 +786,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.ui = loader.load(ui_file, self)
         ui_file.close()
         self.setCentralWidget(self.ui)
-        self.setWindowTitle("Uniden Scanner Text Display - Qt")
+        self.setWindowTitle("ScanDisplay")
 
         self.queue: queue.Queue = queue.Queue()
         self.stop_event = threading.Event()
         self.worker = None
         self.popout: PopoutDisplay | None = None
         self.last_parsed = ParsedDisplay()
-        self.popout_theme = "night"
+        self.popout_theme = "day"
         self.latest_raw: dict[str, str] = {}
         self.raw_order = ["MDL", "VER", "STS", "GLG", "VOL", "SQL", "PWR", "GSI"]
 
@@ -706,7 +803,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self.process_queue)
-        self.timer.start(100)
+        self.timer.start(UI_REFRESH_INTERVAL_MS)
 
     def w(self, name):
         return self.ui.findChild(QtCore.QObject, name)
@@ -719,17 +816,18 @@ class MainWindow(QtWidgets.QMainWindow):
         self.hostEdit = self.w("hostEdit")
         self.udpPortEdit = self.w("udpPortEdit")
         self.modelCombo = self.w("modelCombo")
-        self.pollSpin = self.w("pollSpin")
         self.connectButton = self.w("connectButton")
         self.disconnectButton = self.w("disconnectButton")
         self.openPopoutButton = self.w("openPopoutButton")
         self.closePopoutButton = self.w("closePopoutButton")
         self.dayModeButton = self.w("dayModeButton")
         self.nightModeButton = self.w("nightModeButton")
+        self.holdSystemButton = self.w("holdSystemButton")
+        self.holdDepartmentButton = self.w("holdDepartmentButton")
+        self.holdChannelButton = self.w("holdChannelButton")
         self.statusLabel = self.w("statusLabel")
         self.displayText = self.w("displayText")
         self.rawText = self.w("rawText")
-        self.clearRawButton = self.w("clearRawButton")
 
     def _init_controls(self):
         self.connectionModeCombo.addItems(["Serial / USB COM", "SDS200 Network UDP"])
@@ -738,11 +836,20 @@ class MainWindow(QtWidgets.QMainWindow):
         self.modelCombo.addItems(MODEL_CHOICES)
         self.modelCombo.setCurrentIndex(0)
         self.udpPortEdit.setText("50536")
-        self.pollSpin.setValue(500)
         self.refresh_ports()
         self.update_connection_fields()
         self.disconnectButton.setEnabled(False)
         self.statusLabel.setText("Not connected")
+        if self.holdSystemButton is not None:
+            self.holdSystemButton.setCheckable(True)
+            self.holdSystemButton.setText("System")
+        if self.holdDepartmentButton is not None:
+            self.holdDepartmentButton.setCheckable(True)
+            self.holdDepartmentButton.setText("Department")
+        if self.holdChannelButton is not None:
+            self.holdChannelButton.setCheckable(True)
+            self.holdChannelButton.setText("Channel")
+        self._set_connected_ui(False)
 
     def _connect_signals(self):
         self.connectionModeCombo.currentTextChanged.connect(self.update_connection_fields)
@@ -755,7 +862,12 @@ class MainWindow(QtWidgets.QMainWindow):
             self.dayModeButton.clicked.connect(lambda: self.set_popout_theme("day"))
         if self.nightModeButton is not None:
             self.nightModeButton.clicked.connect(lambda: self.set_popout_theme("night"))
-        self.clearRawButton.clicked.connect(self.clear_raw_snapshot)
+        if self.holdSystemButton is not None:
+            self.holdSystemButton.clicked.connect(self.toggle_hold_system)
+        if self.holdDepartmentButton is not None:
+            self.holdDepartmentButton.clicked.connect(self.toggle_hold_department)
+        if self.holdChannelButton is not None:
+            self.holdChannelButton.clicked.connect(self.toggle_hold_channel)
 
     def _set_display_text(self, lines: list[str]):
         """Update the main Display tab with the full STS screen text view."""
@@ -769,12 +881,17 @@ class MainWindow(QtWidgets.QMainWindow):
         if list_ports is not None:
             ports = [p.device for p in list_ports.comports()]
         if not ports:
-            ports = ["COM1", "COM2", "COM3", "COM4"]
+            if sys.platform.startswith("win"):
+                ports = ["COM1", "COM2", "COM3", "COM4"]
+            else:
+                ports = ["/dev/ttyUSB0", "/dev/ttyUSB1", "/dev/ttyACM0", "/dev/ttyACM1"]
         self.comPortCombo.addItems(ports)
         if current:
             idx = self.comPortCombo.findText(current)
             if idx >= 0:
                 self.comPortCombo.setCurrentIndex(idx)
+        elif self.comPortCombo.count() > 0:
+            self.comPortCombo.setCurrentIndex(0)
 
     def update_connection_fields(self):
         network = "Network" in self.connectionModeCombo.currentText()
@@ -784,37 +901,144 @@ class MainWindow(QtWidgets.QMainWindow):
         self.hostEdit.setEnabled(network)
         self.udpPortEdit.setEnabled(network)
 
+    def _hold_button_text(self, button: QtWidgets.QPushButton, label: str) -> None:
+        # Button text is fixed; hold state is shown via checked/highlight only.
+        if button is not None:
+            button.setText(label)
+
+    def _send_scanner_command(self, cmd: str) -> str:
+        if self.worker is None:
+            self._set_status("Not connected")
+            return ""
+        if not self.worker.is_alive():
+            self._set_status("Connection worker stopped")
+            self.worker = None
+            self._set_connected_ui(False)
+            return ""
+        try:
+            self.worker.queue_command(cmd)
+            self._set_status(f"Queued: {cmd}")
+            if self.rawText is not None:
+                self.rawText.appendPlainText(f"QUEUE: {cmd}")
+            return ""
+        except Exception as exc:
+            self._set_status(f"Command failed: {exc}")
+            return ""
+
+    def _build_hold_command(self, target: str, index: int | None, parent_index: int | None = None) -> str:
+        # SDS200 remote hold command format target keywords.
+        target_map = {
+            "System": "SYS",
+            "Department": "DEPT",
+            "Channel": "TGID",
+        }
+        tkw = target_map.get(target, "")
+        if not tkw or index is None:
+            return ""
+        if target == "Department":
+            if parent_index is None:
+                return ""
+            return f"HLD,{tkw},{index},{parent_index}"
+        return f"HLD,{tkw},{index},"
+
+    def _toggle_hold(self, button: QtWidgets.QPushButton, label: str, index: int | None, parent_index: int | None = None) -> None:
+        if index is None:
+            if button is not None:
+                button.blockSignals(True)
+                button.setChecked(False)
+                button.blockSignals(False)
+            self._set_status(f"No active {label.lower()} to hold")
+            return
+        if button is not None:
+            button.blockSignals(True)
+            button.setChecked(getattr(self.last_parsed, f"{label.lower()}_held", False))
+            button.blockSignals(False)
+        cmd = self._build_hold_command(label, index, parent_index)
+        if not cmd:
+            return
+        self._send_scanner_command(cmd)
+
+    def toggle_hold_system(self):
+        self._toggle_hold(self.holdSystemButton, "System", self.last_parsed.system_index)
+
+    def toggle_hold_department(self):
+        self._toggle_hold(
+            self.holdDepartmentButton,
+            "Department",
+            self.last_parsed.department_index,
+            parent_index=self.last_parsed.system_index,
+        )
+
+    def toggle_hold_channel(self):
+        self._toggle_hold(self.holdChannelButton, "Channel", self.last_parsed.channel_index)
+
     def connect_scanner(self):
         if self.worker is not None:
             return
         self.stop_event.clear()
-        mode = self.modelCombo.currentText()
-        interval = self.pollSpin.value()
         try:
-            if "Network" in self.connectionModeCombo.currentText():
-                host = self.hostEdit.text().strip()
-                port = self.udpPortEdit.text().strip() or "50536"
-                if not host:
-                    QtWidgets.QMessageBox.warning(self, "Missing IP", "Enter the scanner IP address.")
-                    return
-                self.worker = UdpWorker(host, port, mode, interval, self.queue, self.stop_event)
-            else:
-                port = self.comPortCombo.currentText().strip()
-                baud = self.baudCombo.currentText().strip()
-                self.worker = SerialWorker(port, baud, mode, interval, self.queue, self.stop_event)
+            self.worker = self._create_worker()
             self.worker.start()
-            self.connectButton.setEnabled(False)
-            self.disconnectButton.setEnabled(True)
-            self.statusLabel.setText("Connecting...")
+            self._set_connected_ui(True)
+            self._set_status("Connecting...")
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "Connection error", str(exc))
             self.worker = None
 
+    def _create_worker(self):
+        mode = self.modelCombo.currentText()
+        interval = SCANNER_POLL_INTERVAL_MS
+        if self._is_network_mode():
+            host = self.hostEdit.text().strip()
+            port = self.udpPortEdit.text().strip() or "50536"
+            if not host:
+                raise RuntimeError("Enter the scanner IP address.")
+            return UdpWorker(host, port, mode, interval, self.queue, self.stop_event)
+        port = self.comPortCombo.currentText().strip()
+        baud = self.baudCombo.currentText().strip()
+        if not port:
+            raise RuntimeError("Select a serial port before connecting.")
+        if not baud:
+            raise RuntimeError("Select a baud rate before connecting.")
+        return SerialWorker(port, baud, mode, interval, self.queue, self.stop_event)
+
     def disconnect_scanner(self):
         self.stop_event.set()
-        self.worker = None
-        self.connectButton.setEnabled(True)
-        self.disconnectButton.setEnabled(False)
+        self._shutdown_worker()
+        self._set_connected_ui(False)
+
+    def _shutdown_worker(self):
+        if self.worker is not None:
+            self.worker.join(timeout=2.0)
+            self.worker = None
+
+    def _is_network_mode(self) -> bool:
+        return "Network" in self.connectionModeCombo.currentText()
+
+    def _set_connected_ui(self, connected: bool):
+        self.connectButton.setEnabled(not connected)
+        self.disconnectButton.setEnabled(connected)
+        if self.holdSystemButton is not None:
+            self.holdSystemButton.setEnabled(connected)
+        if self.holdDepartmentButton is not None:
+            self.holdDepartmentButton.setEnabled(connected)
+        if self.holdChannelButton is not None:
+            self.holdChannelButton.setEnabled(connected)
+        if not connected:
+            self._reset_hold_buttons()
+
+    def _reset_hold_buttons(self):
+        for button, label in [
+            (self.holdSystemButton, "System"),
+            (self.holdDepartmentButton, "Department"),
+            (self.holdChannelButton, "Channel"),
+        ]:
+            if button is not None:
+                button.setChecked(False)
+                button.setText(label)
+
+    def _set_status(self, status: str):
+        self.statusLabel.setText(status)
 
     def set_popout_theme(self, theme: str):
         self.popout_theme = "day" if str(theme).lower() == "day" else "night"
@@ -823,7 +1047,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def open_popout(self):
         if self.popout is None:
-            self.popout = PopoutDisplay(self, theme=self.popout_theme)
+            self.popout = PopoutDisplay(None, theme=self.popout_theme)
             self.popout.destroyed.connect(lambda: setattr(self, "popout", None))
         else:
             self.popout.apply_theme(self.popout_theme)
@@ -842,28 +1066,35 @@ class MainWindow(QtWidgets.QMainWindow):
                 kind, payload = self.queue.get_nowait()
             except queue.Empty:
                 break
-            if kind == "raw":
-                self.update_raw_snapshot(str(payload))
-            elif kind == "status":
-                self.statusLabel.setText(str(payload))
-                if str(payload).startswith("Disconnected"):
-                    self.connectButton.setEnabled(True)
-                    self.disconnectButton.setEnabled(False)
-                    self.worker = None
-            elif kind == "error":
-                self.statusLabel.setText(f"Error: {payload}")
-                self.rawText.appendPlainText(f"ERROR: {payload}")
-                self.connectButton.setEnabled(True)
-                self.disconnectButton.setEnabled(False)
-                self.worker = None
-            elif kind == "display":
-                self.set_parsed_display(payload)
-            elif kind == "text_display":
-                self._set_display_text(payload or [])
+            self._handle_queue_message(kind, payload)
 
-    def clear_raw_snapshot(self):
-        self.latest_raw.clear()
-        self.rawText.clear()
+    def _handle_queue_message(self, kind: str, payload: object):
+        if kind == "raw":
+            self._handle_raw_message(str(payload))
+        elif kind == "status":
+            self._handle_status_message(str(payload))
+        elif kind == "error":
+            self._handle_error_message(str(payload))
+        elif kind == "display":
+            self.set_parsed_display(payload)
+        elif kind == "text_display":
+            self._set_display_text(payload or [])
+
+    def _handle_raw_message(self, payload: str):
+        self.update_raw_snapshot(payload)
+
+    def _handle_status_message(self, payload: str):
+        self._set_status(payload)
+        if payload.startswith("Disconnected"):
+            self._set_connected_ui(False)
+            self.worker = None
+
+    def _handle_error_message(self, payload: str):
+        self._set_status(f"Error: {payload}")
+        self.rawText.appendPlainText(f"ERROR: {payload}")
+        self._set_connected_ui(False)
+        self.worker = None
+
 
     def update_raw_snapshot(self, line: str):
         cmd = command_name(line)
@@ -909,6 +1140,18 @@ class MainWindow(QtWidgets.QMainWindow):
         # Borderless popout: compact radio-style view.
         lines = parsed.rows or []
         self._set_display_text(lines if lines else ["(blank / no active STS display text)"])
+        if self.holdSystemButton is not None:
+            self.holdSystemButton.blockSignals(True)
+            self.holdSystemButton.setChecked(parsed.system_held)
+            self.holdSystemButton.blockSignals(False)
+        if self.holdDepartmentButton is not None:
+            self.holdDepartmentButton.blockSignals(True)
+            self.holdDepartmentButton.setChecked(parsed.department_held)
+            self.holdDepartmentButton.blockSignals(False)
+        if self.holdChannelButton is not None:
+            self.holdChannelButton.blockSignals(True)
+            self.holdChannelButton.setChecked(parsed.channel_held)
+            self.holdChannelButton.blockSignals(False)
         if self.popout is not None:
             self.popout.update_display(parsed)
 
@@ -932,11 +1175,14 @@ def load_app_fonts():
 
 
 def main():
+    if hasattr(QtCore.QCoreApplication, "setHighDpiScaleFactorRoundingPolicy"):
+        QtCore.QCoreApplication.setHighDpiScaleFactorRoundingPolicy(
+            QtCore.Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
+        )
     app = QtWidgets.QApplication(sys.argv)
     load_app_fonts()
-    app.setApplicationName("Uniden Scanner Text Display")
+    app.setApplicationName("ScanDisplay")
     win = MainWindow()
-    win.resize(820, 620)
     win.show()
     sys.exit(app.exec())
 

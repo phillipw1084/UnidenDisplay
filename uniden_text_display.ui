@@ -6,8 +6,8 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>439</width>
-    <height>632</height>
+    <width>800</width>
+    <height>600</height>
    </rect>
   </property>
   <property name="font">
@@ -69,82 +69,13 @@
           <property name="verticalSpacing">
            <number>6</number>
           </property>
-          <item row="0" column="0">
-           <widget class="QLabel" name="connectionModeLabel">
-            <property name="text">
-             <string>Mode</string>
-            </property>
-           </widget>
-          </item>
-          <item row="0" column="1" colspan="2">
-           <widget class="QComboBox" name="connectionModeCombo"/>
-          </item>
-          <item row="1" column="0">
-           <widget class="QLabel" name="comPortLabel">
-            <property name="text">
-             <string>COM Port</string>
-            </property>
-           </widget>
-          </item>
-          <item row="1" column="1">
-           <widget class="QComboBox" name="comPortCombo"/>
-          </item>
-          <item row="1" column="2">
-           <widget class="QPushButton" name="refreshPortsButton">
-            <property name="text">
-             <string>Refresh</string>
-            </property>
-           </widget>
-          </item>
-          <item row="2" column="0">
-           <widget class="QLabel" name="baudLabel">
-            <property name="text">
-             <string>Baud</string>
-            </property>
-           </widget>
-          </item>
-          <item row="2" column="1" colspan="2">
-           <widget class="QComboBox" name="baudCombo"/>
-          </item>
-          <item row="3" column="0">
+          <item row="4" column="0">
            <widget class="QLabel" name="hostLabel">
             <property name="text">
              <string>SDS200 IP</string>
             </property>
            </widget>
           </item>
-          <item row="3" column="1" colspan="2">
-           <widget class="QLineEdit" name="hostEdit">
-            <property name="placeholderText">
-             <string>192.168.1.50</string>
-            </property>
-           </widget>
-          </item>
-          <item row="4" column="0">
-           <widget class="QLabel" name="udpPortLabel">
-            <property name="text">
-             <string>UDP Port</string>
-            </property>
-           </widget>
-          </item>
-          <item row="4" column="1" colspan="2">
-           <widget class="QLineEdit" name="udpPortEdit"/>
-          </item>
-         </layout>
-        </widget>
-       </item>
-       <item>
-        <widget class="QGroupBox" name="scannerGroup">
-         <property name="title">
-          <string>Scanner</string>
-         </property>
-         <layout class="QGridLayout" name="scannerLayout">
-          <property name="horizontalSpacing">
-           <number>8</number>
-          </property>
-          <property name="verticalSpacing">
-           <number>6</number>
-          </property>
           <item row="0" column="0">
            <widget class="QLabel" name="modelLabel">
             <property name="text">
@@ -152,42 +83,55 @@
             </property>
            </widget>
           </item>
-          <item row="0" column="1">
-           <widget class="QComboBox" name="modelCombo"/>
-          </item>
-          <item row="1" column="0">
-           <widget class="QLabel" name="pollLabel">
+          <item row="5" column="0">
+           <widget class="QLabel" name="udpPortLabel">
             <property name="text">
-             <string>Poll ms</string>
+             <string>UDP Port</string>
+            </property>
+           </widget>
+          </item>
+          <item row="3" column="0">
+           <widget class="QLabel" name="baudLabel">
+            <property name="text">
+             <string>Baud</string>
+            </property>
+           </widget>
+          </item>
+          <item row="2" column="1">
+           <widget class="QComboBox" name="comPortCombo"/>
+          </item>
+          <item row="2" column="0">
+           <widget class="QLabel" name="comPortLabel">
+            <property name="text">
+             <string>COM Port</string>
             </property>
            </widget>
           </item>
           <item row="1" column="1">
-           <widget class="QSpinBox" name="pollSpin">
-            <property name="minimum">
-             <number>100</number>
-            </property>
-            <property name="maximum">
-             <number>5000</number>
-            </property>
-            <property name="singleStep">
-             <number>100</number>
+           <widget class="QComboBox" name="connectionModeCombo"/>
+          </item>
+          <item row="2" column="2">
+           <widget class="QPushButton" name="refreshPortsButton">
+            <property name="text">
+             <string>Refresh</string>
             </property>
            </widget>
           </item>
-         </layout>
-        </widget>
-       </item>
-       <item>
-        <widget class="QGroupBox" name="actionsGroup">
-         <property name="title">
-          <string>Actions</string>
-         </property>
-         <layout class="QVBoxLayout" name="actionsLayout">
-          <property name="spacing">
-           <number>6</number>
-          </property>
-          <item>
+          <item row="4" column="1">
+           <widget class="QLineEdit" name="hostEdit">
+            <property name="placeholderText">
+             <string>192.168.1.50</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="0">
+           <widget class="QLabel" name="connectionModeLabel">
+            <property name="text">
+             <string>Mode</string>
+            </property>
+           </widget>
+          </item>
+          <item row="6" column="0">
            <layout class="QHBoxLayout" name="connectButtonsLayout">
             <item>
              <widget class="QPushButton" name="connectButton">
@@ -218,19 +162,40 @@
             </item>
            </layout>
           </item>
+          <item row="3" column="1">
+           <widget class="QComboBox" name="baudCombo"/>
+          </item>
+          <item row="0" column="1">
+           <widget class="QComboBox" name="modelCombo"/>
+          </item>
+          <item row="5" column="1">
+           <widget class="QLineEdit" name="udpPortEdit"/>
+          </item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <widget class="QGroupBox" name="actionsGroup">
+         <property name="title">
+          <string>Actions</string>
+         </property>
+         <layout class="QVBoxLayout" name="actionsLayout">
+          <property name="spacing">
+           <number>6</number>
+          </property>
           <item>
            <layout class="QHBoxLayout" name="popoutButtonsLayout">
             <item>
              <widget class="QPushButton" name="openPopoutButton">
               <property name="text">
-               <string>Open Borderless Display</string>
+               <string>Open Display</string>
               </property>
              </widget>
             </item>
             <item>
              <widget class="QPushButton" name="closePopoutButton">
               <property name="text">
-               <string>Close Display Window</string>
+               <string>Close Display</string>
               </property>
              </widget>
             </item>
@@ -276,6 +241,40 @@
            </layout>
           </item>
           <item>
+           <layout class="QHBoxLayout" name="holdButtonsLayout">
+            <item>
+             <widget class="QPushButton" name="holdSystemButton">
+              <property name="text">
+               <string>System</string>
+              </property>
+              <property name="checkable">
+               <bool>true</bool>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QPushButton" name="holdDepartmentButton">
+              <property name="text">
+               <string>Department</string>
+              </property>
+              <property name="checkable">
+               <bool>true</bool>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QPushButton" name="holdChannelButton">
+              <property name="text">
+               <string>Channel</string>
+              </property>
+              <property name="checkable">
+               <bool>true</bool>
+              </property>
+             </widget>
+            </item>
+           </layout>
+          </item>
+          <item>
            <widget class="QLabel" name="statusLabel">
             <property name="text">
              <string>Not connected</string>
@@ -284,19 +283,6 @@
           </item>
          </layout>
         </widget>
-       </item>
-       <item>
-        <spacer name="setupBottomSpacer">
-         <property name="orientation">
-          <enum>Qt::Orientation::Vertical</enum>
-         </property>
-         <property name="sizeHint" stdset="0">
-          <size>
-           <width>20</width>
-           <height>40</height>
-          </size>
-         </property>
-        </spacer>
        </item>
       </layout>
      </widget>
@@ -319,24 +305,23 @@
        </property>
        <item>
         <widget class="QPlainTextEdit" name="displayText">
+         <property name="font">
+          <font>
+           <family>Consolas</family>
+           <pointsize>9</pointsize>
+          </font>
+         </property>
          <property name="styleSheet">
-          <string notr="true">
-QPlainTextEdit#displayText {
-  background-color: #202327;
-  color: #f4f4f4;
-  border: 1px solid #050505;
-  border-radius: 6px;
-  padding: 10px;
-  font-family: Consolas;
-  font-size: 13pt;
-}
-         </string>
+          <string notr="true"/>
          </property>
          <property name="readOnly">
           <bool>true</bool>
          </property>
          <property name="plainText">
           <string>Waiting for scanner display...</string>
+         </property>
+         <property name="backgroundVisible">
+          <bool>false</bool>
          </property>
         </widget>
        </item>
@@ -369,13 +354,6 @@ QPlainTextEdit#displayText {
          </property>
          <property name="readOnly">
           <bool>true</bool>
-         </property>
-        </widget>
-       </item>
-       <item>
-        <widget class="QPushButton" name="clearRawButton">
-         <property name="text">
-          <string>Clear Raw Output</string>
          </property>
         </widget>
        </item>
